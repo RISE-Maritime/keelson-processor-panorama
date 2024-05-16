@@ -1,0 +1,17 @@
+version: "3.9"
+
+services:
+
+  zenoh-router:
+     image: eclipse/zenoh:0.11.0-rc.3
+     restart: unless-stopped
+     network_mode: host                 
+     environment:
+       - RUST_LOG=debug                                                             
+     command: >-
+        --listen tcp/[::]:7447                                                      
+        --cfg='mode:"router"'                         
+        --cfg='metadata:{"name":"test-panorama"}'  
+
+
+
