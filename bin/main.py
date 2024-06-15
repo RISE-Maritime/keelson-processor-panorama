@@ -45,8 +45,10 @@ def query_panorama(query):
         consolidation=zenoh.QueryConsolidation.NONE(),
     )
 
+    arrImages = []
 
     for reply in replies.receiver:
+
         try:
             print(
                 ">> Received ('{}': '{}')".format(reply.ok.key_expr, reply.ok.payload)
@@ -54,6 +56,7 @@ def query_panorama(query):
             # Unpacking image    
             received_at, enclosed_at, content = keelson.uncover(reply.ok.payload)
             logging.debug(f"content {content} received_at: {received_at}, enclosed_at {enclosed_at}")
+
             Image = CompressedImage.FromString(content)
 
             img_dic = {
@@ -63,9 +66,13 @@ def query_panorama(query):
                 "format": Image.format
             }
 
+            arrImages.append(img_dic)
+
         except:
             print(">> Received (ERROR: '{}')".format(reply.err.payload))
 
+
+  
     ##########################
     # TODO: STITCHING HERE
     ##########################
