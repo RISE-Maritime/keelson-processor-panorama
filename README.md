@@ -21,12 +21,12 @@ Setup for development environment on your own computer:
     # Navigate to folder containing docker-compose.zenoh-router.yml
   
     # Start router with log output 
-    docker-compose -f containing docker-compose.zenoh-router.yml up 
+   docker compose -f docker-compose.zenoh-router.yml up 
 
     # If no obvious errors, stop container "ctrl-c"
 
     # Start container and let it run in the background/detached (append -d) 
-    docker-compose -f containing docker-compose.zenoh-router.yml up -d
+    docker compose -f docker-compose.zenoh-router.yml up -d
    ```
 
     [Link to --> docker-compose.zenoh-router.yml](docker-compose.zenoh-router.yml)
