@@ -9,89 +9,89 @@ import keelson
 from terminal_inputs import terminal_inputs
 from keelson.payloads.CompressedImage_pb2 import CompressedImage
 from keelson.payloads.RawImage_pb2 import RawImage
+import cv2
+import numpy as np
+import os
 
 session = None
 args = None
 pub_camera_panorama = None
 
 
-def query_panorama(query):
-    """
-    Query for panorama image
+# def query_panorama(query):
+#     """
+#     Query for panorama image
 
-    Args:
-        query (zenoh.Query): Zenoh query object
-    Returns:
-        envelope (bytes) with compressed image payload
-    """
+#     Args:
+#         query (zenoh.Query): Zenoh query object
+#     Returns:
+#         envelope (bytes) with compressed image payload
+#     """
 
-    ingress_timestamp = time.time_ns()
-    
-    query_key = query.selector
-    logging.debug(f">> [Query] Received query key {query_key}")
+#     ingress_timestamp = time.time_ns()
 
-    query_payload = query.value.payload
-    logging.debug(f">> [Query] Received query payload {query_payload}")
+#     query_key = query.selector
+#     logging.debug(f">> [Query] Received query key {query_key}")
 
-    # Expecting not a payload 
+#     query_payload = query.value.payload
+#     logging.debug(f">> [Query] Received query payload {query_payload}")
 
-    # Triggering get requests for camera images
+#     # Expecting not a payload
 
-    # Camera image getter
-    replies = session.get(
-        args.camera_query,
-        zenoh.Queue(),
-        target=QueryTarget.BEST_MATCHING(),
-        consolidation=zenoh.QueryConsolidation.NONE(),
-    )
+#     # Triggering get requests for camera images
 
-    arrImages = []
+#     # Camera image getter
+#     replies = session.get(
+#         args.camera_query,
+#         zenoh.Queue(),
+#         target=QueryTarget.BEST_MATCHING(),
+#         consolidation=zenoh.QueryConsolidation.NONE(),
+#     )
 
-    for reply in replies.receiver:
+#     arrImages = []
 
-        try:
-            print(
-                ">> Received ('{}': '{}')".format(reply.ok.key_expr, reply.ok.payload)
-            )
-            # Unpacking image    
-            received_at, enclosed_at, content = keelson.uncover(reply.ok.payload)
-            logging.debug(f"content {content} received_at: {received_at}, enclosed_at {enclosed_at}")
+#     for reply in replies.receiver:
 
-            Image = CompressedImage.FromString(content)
+#         try:
+#             print(
+#                 ">> Received ('{}': '{}')".format(reply.ok.key_expr, reply.ok.payload)
+#             )
+#             # Unpacking image
+#             received_at, enclosed_at, content = keelson.uncover(reply.ok.payload)
+#             logging.debug(f"content {content} received_at: {received_at}, enclosed_at {enclosed_at}")
 
-            img_dic = {
-                "timestamp": Image.timestamp.ToDatetime(),
-                "frame_id": Image.frame_id,
-                "data": Image.data,
-                "format": Image.format
-            }
+#             Image = CompressedImage.FromString(content)
 
-            arrImages.append(img_dic)
+#             img_dic = {
+#                 "timestamp": Image.timestamp.ToDatetime(),
+#                 "frame_id": Image.frame_id,
+#                 "data": Image.data,
+#                 "format": Image.format
+#             }
 
-        except:
-            print(">> Received (ERROR: '{}')".format(reply.err.payload))
+#             arrImages.append(img_dic)
 
-
-  
-    ##########################
-    # TODO: STITCHING HERE
-    ##########################
+#         except:
+#             print(">> Received (ERROR: '{}')".format(reply.err.payload))
 
 
-    # Packing panorama created
-    newImage = CompressedImage()
-    newImage.timestamp.FromNanoseconds(ingress_timestamp)
-    newImage.frame_id = "foxglove_frame_id"
-    newImage.data = b"binary_image_data" # Binary image data 
-    newImage.format = "jpeg" # supported formats `webp`, `jpeg`, `png`
-    serialized_payload = newImage.SerializeToString()
-    envelope = keelson.enclose(serialized_payload)
-
-    # Replaying on the query with the panorama image in an keelson envelope
-    query.reply(zenoh.Sample(str(query.selector), envelope))
-    # query.reply(zenoh.Sample(str(query.selector), "OK")) # Simple response for testing
+#     ##########################
+#     # TODO: STITCHING HERE
+#     ##########################
 
 
+#     # Packing panorama created
+#     newImage = CompressedImage()
+#     newImage.timestamp.FromNanoseconds(ingress_timestamp)
+#     newImage.frame_id = "foxglove_frame_id"
+#     newImage.data = b"binary_image_data" # Binary image data
+#     newImage.format = "jpeg" # supported formats `webp`, `jpeg`, `png`
+#     serialized_payload = newImage.SerializeToString()
+#     envelope = keelson.enclose(serialized_payload)
+
+#     # Replaying on the query with the panorama image in an keelson envelope
+#     query.reply(zenoh.Sample(str(query.selector), envelope))
+#     # query.reply(zenoh.Sample(str(query.selector), "OK")) # Simple response for testing
 
 
 def subscriber_camera_publisher(data):
@@ -100,35 +100,45 @@ def subscriber_camera_publisher(data):
     """
 
     ingress_timestamp = time.time_ns()
-    
-    data_key = data.selector
-    logging.debug(f">> [Query] Received query key {data_key}")
 
-    data_payload = data.value.payload
-    logging.debug(f">> [Query] Received query payload {data_payload}")
+    received_at, enclosed_at, content = keelson.uncover(data.payload)
 
-    received_at, enclosed_at, content = keelson.uncover(data_payload)
-    logging.debug(f"content {content} received_at: {received_at}, enclosed_at {enclosed_at}")
+    logging.debug(
+        f"content {content} received_at: {received_at}, enclosed_at {enclosed_at}")
     Image = CompressedImage.FromString(content)
+
     img_dic = {
-            "timestamp": Image.timestamp.ToDatetime(),
-            "frame_id": Image.frame_id,
-            "data": Image.data,
-            "format": Image.format
-        }
-    
+        "timestamp": Image.timestamp.ToDatetime(),
+        "frame_id": Image.frame_id,
+        "data": Image.data,
+        "format": Image.format
+    }
+
+    # Convert the image data to a numpy array
+    image_data = np.frombuffer(img_dic['data'], dtype=np.uint8)
+
+    # Decode the image data
+    decoded_image = cv2.imdecode(image_data, cv2.IMREAD_COLOR)
+
+    # Save the image to disk
+    output_image_path = os.path.join("./imgs", "panorama_image.jpg")
+    cv2.imwrite(output_image_path, decoded_image)
+
+    # Display the image (FOLLOWING DONT WORK as it is headless - unsure if threr is a workaround? Maybe, if not used in the dev container insted try in a local env)
+    # cv2.imshow("Panorama Image", decoded_image)
+    # cv2.waitKey(0)
+    # cv2.destroyAllWindows()
 
     ##########################
     # TODO: STITCHING HERE
     ##########################
 
-
     # Packing panorama created
     newImage = CompressedImage()
     newImage.timestamp.FromNanoseconds(ingress_timestamp)
     newImage.frame_id = "foxglove_frame_id"
-    newImage.data = b"binary_image_data" # Binary image data 
-    newImage.format = "jpeg" # supported formats `webp`, `jpeg`, `png`
+    newImage.data = b"binary_image_data"  # Binary image data
+    newImage.format = "jpeg"  # supported formats `webp`, `jpeg`, `png`
     serialized_payload = newImage.SerializeToString()
     envelope = keelson.enclose(serialized_payload)
     pub_camera_panorama.put(envelope)
@@ -146,15 +156,17 @@ def fixed_hz_publisher():
         consolidation=zenoh.QueryConsolidation.NONE(),
     )
 
-
     for reply in replies.receiver:
         try:
             print(
-                ">> Received ('{}': '{}')".format(reply.ok.key_expr, reply.ok.payload)
+                ">> Received ('{}': '{}')".format(
+                    reply.ok.key_expr, reply.ok.payload)
             )
-            # Unpacking image    
-            received_at, enclosed_at, content = keelson.uncover(reply.ok.payload)
-            logging.debug(f"content {content} received_at: {received_at}, enclosed_at {enclosed_at}")
+            # Unpacking image
+            received_at, enclosed_at, content = keelson.uncover(
+                reply.ok.payload)
+            logging.debug(
+                f"content {content} received_at: {received_at}, enclosed_at {enclosed_at}")
             Image = CompressedImage.FromString(content)
 
             img_dic = {
@@ -171,18 +183,16 @@ def fixed_hz_publisher():
     # TODO: STITCHING HERE
     ##########################
 
-
     # Packing panorama created
     newImage = CompressedImage()
     newImage.timestamp.FromNanoseconds(ingress_timestamp)
     newImage.frame_id = "foxglove_frame_id"
-    newImage.data = b"binary_image_data" # Binary image data 
-    newImage.format = "jpeg" # supported formats `webp`, `jpeg`, `png`
+    newImage.data = b"binary_image_data"  # Binary image data
+    newImage.format = "jpeg"  # supported formats `webp`, `jpeg`, `png`
     serialized_payload = newImage.SerializeToString()
     envelope = keelson.enclose(serialized_payload)
     pub_camera_panorama.put(envelope)
     time.sleep(1 / args.fixed_hz)
-
 
 
 #####################################################
@@ -203,7 +213,7 @@ if __name__ == "__main__":
     logging.captureWarnings(True)
     warnings.filterwarnings("once")
 
-    ## Construct session
+    # Construct session
     logging.info("Opening Zenoh session...")
     conf = zenoh.Config()
     if args.connect is not None:
@@ -233,22 +243,21 @@ if __name__ == "__main__":
     )
     logging.info(f"Created publisher: {key_exp_pub_camera_pano}")
 
-
     #################################################
     # Setting up Querible
 
     # Camera panorama
-    key_exp_query_camera_pano = keelson.construct_req_rep_key(
-        realm=args.realm,
-        entity_id=args.entity_id,
-        responder_id="panorama",
-        procedure="get_panorama",
-    )
-    query_camera_panorama = session.declare_queryable(
-        key_exp_query_camera_pano,
-        query_panorama
-    )
-    logging.info(f"Created queryable: {key_exp_query_camera_pano}")
+    # key_exp_query_camera_pano = keelson.construct_req_rep_key(
+    #     realm=args.realm,
+    #     entity_id=args.entity_id,
+    #     responder_id="panorama",
+    #     procedure="get_panorama",
+    # )
+    # query_camera_panorama = session.declare_queryable(
+    #     key_exp_query_camera_pano,
+    #     query_panorama
+    # )
+    # logging.info(f"Created queryable: {key_exp_query_camera_pano}")
 
     #################################################
 
@@ -256,13 +265,15 @@ if __name__ == "__main__":
 
         # TODO: SUBSCRIPTION initialization for panorama image creation
         if args.trigger_sub is not None:
-            logging.info(f"Trigger Subscribing Key: {args.trigger_sub}")
+
             key_exp_sub_camera = keelson.construct_pub_sub_key(
                 realm=args.realm,
                 entity_id=args.entity_id,
                 subject="compressed_image",  # Needs to be a supported subject
                 source_id=args.trigger_sub,
             )
+
+            logging.info(f"Subscribing to key: {key_exp_sub_camera}")
 
             # Declaring zenoh publisher
             sub_camera = session.declare_subscriber(
