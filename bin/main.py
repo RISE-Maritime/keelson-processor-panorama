@@ -121,7 +121,7 @@ def subscriber_camera_publisher(data):
     decoded_image = cv2.imdecode(image_data, cv2.IMREAD_COLOR)
 
     # Save the image to disk
-    output_image_path = os.path.join("./imgs", "panorama_image.jpg")
+    output_image_path = os.path.join("./imgs", "test_image.jpg")
     cv2.imwrite(output_image_path, decoded_image)
 
     # Display the image (FOLLOWING DONT WORK as it is headless - unsure if threr is a workaround? Maybe, if not used in the dev container insted try in a local env)
