@@ -12,6 +12,7 @@ from keelson.payloads.RawImage_pb2 import RawImage
 import cv2
 import numpy as np
 import os
+import pickle
 
 session = None
 args = None
@@ -120,9 +121,40 @@ def subscriber_camera_publisher(data):
     # Decode the image data
     decoded_image = cv2.imdecode(image_data, cv2.IMREAD_COLOR)
 
+    # Load calibration data from pickle
+    calibration_data_path = os.path('./Calibration_v2.p')
+    with open(calibration_data_path, "rb") as f:
+        calib_data = pickle.load(f)
+
+    mtx = calib_data["mtx"]
+    dist = calib_data["dist"]
+    optimal_camera_matrix = calib_data["optimal_camera_matrix"]
+    roi = calib_data["roi"]
+    x, y, w, h = roi
+    
+    
+    if decoded_image is not None:
+        # Undistort and process the image
+        undistorted_image = cv2.undistort(decoded_image, mtx, dist, None, optimal_camera_matrix)
+        cropped_image = undistorted_image[y:y+h, x:x+w]
+
+        # Publish the processed image
+        publish_processed_image(cropped_image, ingress_timestamp)
+
+    def publish_processed_image(image, timestamp):
+        newImage = CompressedImage()
+        newImage.timestamp.FromNanoseconds(timestamp)
+        newImage.frame_id = "processed_image"
+        _, image_data = cv2.imencode('.jpg', image)
+        newImage.data = image_data.tobytes()
+        newImage.format = "jpeg"
+        serialized_payload = newImage.SerializeToString()
+        envelope = keelson.enclose(serialized_payload)
+        pub_camera_panorama.put(envelope)
+
     # Save the image to disk
-    output_image_path = os.path.join("./imgs", "test_image.jpg")
-    cv2.imwrite(output_image_path, decoded_image)
+    # output_image_path = os.path.join("./imgs", "test_image.jpg")
+    # cv2.imwrite(output_image_path, decoded_image)
 
     # Display the image (FOLLOWING DONT WORK as it is headless - unsure if threr is a workaround? Maybe, if not used in the dev container insted try in a local env)
     # cv2.imshow("Panorama Image", decoded_image)
@@ -222,6 +254,7 @@ if __name__ == "__main__":
 
     def _on_exit():
         session.close()
+        logging.info("Zenoh session closed.")
 
     atexit.register(_on_exit)
     logging.info(f"Zenoh session established: {session.info()}")
@@ -291,7 +324,8 @@ if __name__ == "__main__":
     except Exception as e:
         logging.error(f"Program ended due to error: {e}")
 
-    # finally:
+    finally:
     #     logging.info("Closing Zenoh session...")
     #     session.close()
     #     logging.info("Zenoh session closed.")
+        _on_exit()
