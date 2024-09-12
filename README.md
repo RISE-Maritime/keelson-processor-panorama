@@ -36,7 +36,7 @@
      # You need to input your system info in all places where <this_text_is>
 
      # Template
-     docker run --rm --network host --name mcap-replay --volume <path_to_file_dir>:rec ghcr.io/rise-maritime/keelson:0.3.7-pre.55 "mcap-replay --input rec/<name_of_file>.mcap"
+     docker run --rm --network host --name mcap-replay --volume <path_to_file_dir>:/mcap_rec ghcr.io/rise-maritime/keelson:0.3.7-pre.55 "mcap-replay --input mcap_rec/<name_of_file>.mcap"
 
      # Example
      docker run --rm --network host --name mcap-replay --volume E:/EPA_TEMP:rec ghcr.io/rise-maritime/keelson:0.3.7-pre.55 "mcap-replay --input rec/sspa.mcap"
