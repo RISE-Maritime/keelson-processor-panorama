@@ -39,7 +39,7 @@
      docker run --rm --network host --name mcap-replay --volume <path_to_file_dir>:/mcap_rec ghcr.io/rise-maritime/keelson:0.3.7-pre.55 "mcap-replay --input mcap_rec/<name_of_file>.mcap"
 
      # Example
-     docker run --rm --network host --name mcap-replay --volume E:/EPA_TEMP:rec ghcr.io/rise-maritime/keelson:0.3.7-pre.55 "mcap-replay --input rec/sspa.mcap"
+     docker run --rm --network host --name mcap-replay --volume E:/EPA_TEMP:/mcap_rec ghcr.io/rise-maritime/keelson:0.3.7-pre.55 "mcap-replay --input mcap_rec/sspa.mcap"
      ```
 
    - If the file is found, you should see something similar to the following output:
