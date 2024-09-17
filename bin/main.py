@@ -258,6 +258,8 @@ if __name__ == "__main__":
     # Construct session
     logging.info("Opening Zenoh session...")
     conf = zenoh.Config()
+    if args.mode is not None:
+        conf.insert_json5(zenoh.config.MODE_KEY, json.dumps(args.mode))
     if args.connect is not None:
         conf.insert_json5(zenoh.config.CONNECT_KEY, json.dumps(args.connect))
     session = zenoh.open(conf)

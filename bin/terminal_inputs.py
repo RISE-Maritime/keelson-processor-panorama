@@ -15,6 +15,16 @@ def terminal_inputs():
         default=30,
         help="Log level 10=DEBUG, 20=INFO, 30=WARN, 40=ERROR, 50=CRITICAL 0=NOTSET",
     )
+
+    parser.add_argument(
+        "--mode",
+        "-m",
+        dest="mode",
+        choices=["peer", "client"],
+        type=str,
+        help="The zenoh session mode.",
+    )
+
     parser.add_argument(
         "--connect",
         action="append",

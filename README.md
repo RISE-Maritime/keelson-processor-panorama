@@ -76,5 +76,11 @@
 
 ```bash
 python3 bin/main.py --log-level 10 -e boatswain --trigger-sub axis-1
+
+
+# Zenoh Router not connecting  
+python bin/main.py  --connect tcp/localhost:7447 --mode  client --log-level 10 --entity-id boatswain --trigger-sub “rise/v0/boatswain/pubsub/compressed_image/**"  
 ```
+
+
 
