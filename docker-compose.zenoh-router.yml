@@ -1,18 +1,45 @@
-version: "3.9"
+# version: "3.9"
+
+# services:
+
+#   zenoh-router:
+#      image: eclipse/zenoh:0.11.0-rc.3
+#      container_name: zenoh-router
+#      restart: unless-stopped
+#      network_mode: host                 
+#      environment:
+#        - RUST_LOG=debug                                                             
+#      command: >-
+#         --listen tcp/[::]:7447                                                      
+#         --cfg='mode:"router"'                         
+#         --cfg='metadata:{"name":"zenoh-router"}'  
+
 
 services:
-
-  zenoh-router:
-     image: eclipse/zenoh:0.11.0-rc.3
-     container_name: zenoh-router
-     restart: unless-stopped
-     network_mode: host                 
-     environment:
-       - RUST_LOG=debug                                                             
-     command: >-
-        --listen tcp/[::]:7447                                                      
-        --cfg='mode:"router"'                         
-        --cfg='metadata:{"name":"zenoh-router"}'  
-
-
-
+ 
+  keelson-router:
+    image: eclipse/zenoh:0.11.0-rc.3
+    container_name: keelson-router-wsl
+    restart: always
+    ports:
+      # - 7447:7447/tcp
+      - 7447:7447
+      - 8000:8000
+    environment:
+      - RUST_LOG=debug
+    command:  >-
+        --listen tcp/[::]:7447
+        --cfg='mode:"router"'
+        --connect tls/zenoh.mo.ri.se:443
+        --cfg='metadata:{"name":"ted-wsl","location":"home"}'
+        --cfg='transport/link/tls/client_auth:true'
+        --cfg='transport/link/tls/root_ca_certificate:"/root_ca_certificate.pem"'
+        --cfg='transport/link/tls/client_private_key:"/client_private_key.pem"'
+        --cfg='transport/link/tls/client_certificate:"/client_certificate.pem"'
+      # --cfg='plugins/storage_manager/storages/latest_local/volume:"memory"'
+      # --cfg='plugins/storage_manager/storages/latest_local/key_expr:"${REALM}/*/${LOCATION}/pubsub/**"'
+ 
+    volumes:
+      - ./minica.pem:/root_ca_certificate.pem
+      - ./key.pem:/client_private_key.pem
+      - ./cert.pem:/client_certificate.pem

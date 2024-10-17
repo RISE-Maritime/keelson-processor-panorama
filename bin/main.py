@@ -8,22 +8,20 @@ import time
 import keelson
 from terminal_inputs import terminal_inputs
 from keelson.payloads.CompressedImage_pb2 import CompressedImage
-from keelson.payloads.RawImage_pb2 import RawImage
 import cv2
 import numpy as np
 import os
 import pickle
-from google.protobuf import timestamp_pb2
-from keelson.payloads.CompressedImage_pb2 import CompressedImage
-
-
-
-from keelson import enclose, construct_pub_sub_key
+import queue
+import threading
+import signal
 
 session = None
 args = None
 pub_camera_panorama = None
-
+image_queue = queue.Queue(maxsize=10)  # Limit the size of the queue to avoid memory issues
+stop_event = threading.Event()  # Event to signal worker threads to stop
+sub_camera = None  # Handle for Zenoh subscriber
 
 # Load calibration data
 calibration_data_path = './bin/Calibration_v2.p'
@@ -36,210 +34,124 @@ optimal_camera_matrix = calib_data["optimal_camera_matrix"]
 roi = calib_data["roi"]
 x, y, w, h = roi
 
+# Define the number of worker threads
+NUM_WORKERS = 4  # You can adjust this number based on the capacity of your system
 
+def process_image_worker(worker_id):
+    """
+    Worker thread that processes images from the queue.
+    Runs in parallel to the main Zenoh subscriber.
+    """
+    global pub_camera_panorama
+    logging.info(f"Worker {worker_id} started.")
+    while not stop_event.is_set() or not image_queue.empty():
+        try:
+            # Get image from queue (block if no image available, timeout allows thread to check stop event)
+            data = image_queue.get(timeout=1)
 
+            if data is None:
+                logging.info(f"Worker {worker_id} received stop signal.")
+                break  # Stop the thread if we get None (signal to shut down)
 
-# def query_panorama(query):
-#     """
-#     Query for panorama image
+            ingress_timestamp, decoded_image, axis = data
 
-#     Args:
-#         query (zenoh.Query): Zenoh query object
-#     Returns:
-#         envelope (bytes) with compressed image payload
-#     """
+            if decoded_image is not None:
+                # Apply calibration
+                undistorted_image = cv2.undistort(decoded_image, mtx, dist, None, optimal_camera_matrix)
+                cropped_image = undistorted_image[y:y+h, x:x+w]
 
-#     ingress_timestamp = time.time_ns()
+                # Encode the image back to compressed format (JPEG)
+                _, compressed_image_data = cv2.imencode('.jpg', cropped_image)
 
-#     query_key = query.selector
-#     logging.debug(f">> [Query] Received query key {query_key}")
+                if compressed_image_data is not None:
+                    # Prepare the new image with the updated timestamp
+                    new_image = CompressedImage()
+                    new_image.timestamp.FromNanoseconds(ingress_timestamp)
+                    new_image.data = compressed_image_data.tobytes()
+                    new_image.format = 'jpeg'
+                    print('HEEEJ') 
+                    serialized_payload = new_image.SerializeToString()
+                    envelope = keelson.enclose(serialized_payload)
 
-#     query_payload = query.value.payload
-#     logging.debug(f">> [Query] Received query payload {query_payload}")
+                    # Publish the undistorted and cropped image
+                    pub_camera_panorama.put(envelope)
+                    logging.debug(f'Worker {worker_id} sending undistorted image for axis-{axis}...')
+                else:
+                    logging.error(f"Worker {worker_id} failed to encode undistorted image")
+            else:
+                logging.error(f"Worker {worker_id} failed to decode received image")
+            
+            # Indicate that the task is done
+            image_queue.task_done()
 
-#     # Expecting not a payload
+        except queue.Empty:
+            # Timeout reached, allowing the worker to check if it should stop
+            continue
+        except Exception as e:
+            logging.error(f"Error in worker {worker_id}: {e}")
 
-#     # Triggering get requests for camera images
+def stop_workers():
+    """
+    Stop all worker threads by signaling them and adding None to the queue.
+    """
+    logging.info("Stopping workers...")
+    stop_event.set()  # Signal all threads to stop
+    for _ in range(NUM_WORKERS):
+        image_queue.put(None)  # Add stop signal to the queue for each worker
 
-#     # Camera image getter
-#     replies = session.get(
-#         args.camera_query,
-#         zenoh.Queue(),
-#         target=QueryTarget.BEST_MATCHING(),
-#         consolidation=zenoh.QueryConsolidation.NONE(),
-#     )
-
-#     arrImages = []
-
-#     for reply in replies.receiver:
-
-#         try:
-#             print(
-#                 ">> Received ('{}': '{}')".format(reply.ok.key_expr, reply.ok.payload)
-#             )
-#             # Unpacking image
-#             received_at, enclosed_at, content = keelson.uncover(reply.ok.payload)
-#             logging.debug(f"content {content} received_at: {received_at}, enclosed_at {enclosed_at}")
-
-#             Image = CompressedImage.FromString(content)
-
-#             img_dic = {
-#                 "timestamp": Image.timestamp.ToDatetime(),
-#                 "frame_id": Image.frame_id,
-#                 "data": Image.data,
-#                 "format": Image.format
-#             }
-
-#             arrImages.append(img_dic)
-
-#         except:
-#             print(">> Received (ERROR: '{}')".format(reply.err.payload))
-
-
-#     ##########################
-#     # TODO: STITCHING HERE
-#     ##########################
-
-
-#     # Packing panorama created
-#     newImage = CompressedImage()
-#     newImage.timestamp.FromNanoseconds(ingress_timestamp)
-#     newImage.frame_id = "foxglove_frame_id"
-#     newImage.data = b"binary_image_data" # Binary image data
-#     newImage.format = "jpeg" # supported formats `webp`, `jpeg`, `png`
-#     serialized_payload = newImage.SerializeToString()
-#     envelope = keelson.enclose(serialized_payload)
-
-#     # Replaying on the query with the panorama image in an keelson envelope
-#     query.reply(zenoh.Sample(str(query.selector), envelope))
-#     # query.reply(zenoh.Sample(str(query.selector), "OK")) # Simple response for testing
-
+    # Wait for all worker threads to finish
+    for worker_thread in worker_threads:
+        worker_thread.join()
 
 def subscriber_camera_publisher(data):
+    if args.trigger_sub is not None:
+        key_exp_sub_camera = args.trigger_sub
+        logging.info(f"Subscribing to key: {key_exp_sub_camera}")
+
+        # Declaring subscriber
+        sub_camera = session.declare_subscriber(
+            key_exp_sub_camera, subscriber_camera_publisher
+        )
+        
+        logging.info("Subscriber declared successfully.")
     """
-    Subscriber trigger by camera image incoming
+    Subscriber trigger by camera image incoming.
+    Adds images to the processing queue for asynchronous handling.
     """
+    print('ddd')
+    if stop_event.is_set():
+        return  # Stop adding images to the queue if we are shutting down
 
     ingress_timestamp = time.time_ns()
     received_at, enclosed_at, content = keelson.uncover(data.payload)
-    logging.debug(f"content {content} received_at: {received_at}, enclosed_at {enclosed_at}")
+
+    logging.debug(f"received_at: {received_at}, enclosed_at {enclosed_at}")
+
+    incoming_image = CompressedImage.FromString(content)
 
     # Extract axis number from the key expression
-    axis = data.key_expr.split('-')[-1]  # Assuming the key ends with '-1', '-2', etc.
-    decoded_image = cv2.imdecode(np.frombuffer(content, dtype=np.uint8), cv2.IMREAD_COLOR)
+    axis = str(data.key_expr).split('-')[-1]  # Assuming the key ends with '-1', '-2', etc.
+    decoded_image = cv2.imdecode(np.frombuffer(incoming_image.data, dtype=np.uint8), cv2.IMREAD_COLOR)
 
-    if decoded_image is not None:
-        undistorted_image = cv2.undistort(decoded_image, mtx, dist, None, optimal_camera_matrix)
-        cropped_image = undistorted_image[y:y+h, x:x+w]
-        _, compressed_image_data = cv2.imencode('.jpg', cropped_image)
-        if compressed_image_data is not None:
-            new_image = CompressedImage()
-            now = timestamp_pb2.Timestamp()
-            now.GetCurrentTime()
-            new_image.timestamp.CopyFrom(now)
-            new_image.data = compressed_image_data.tobytes()
-            new_image.format = 'jpeg'  # Ensure this format matches one of the acceptable formats
+    try:
+        # Add the decoded image to the queue for processing
+        image_queue.put_nowait((ingress_timestamp, decoded_image, axis))
+    except queue.Full:
+        logging.error("Image processing queue is full. Dropping frame.")
 
-            # Dynamically determine the topic based on the axis
-            topic = f'rise/v0/boatswain/pubsub/undistorted_image/axis-{axis}'
-            
-            # Use the pre-defined publishers dictionary to publish the image
-            if int(axis) in undistorted_image_publishers:
-                undistorted_image_publishers[int(axis)].put(new_image.SerializeToString())
-                logging.info(f"Published undistorted image for axis {axis}")
-            else:
-                logging.error(f"No publisher found for axis {axis}")
-        else:
-            logging.error("Failed to encode undistorted image")
-    else:
-        logging.error("Failed to decode received image")     
-    
+def signal_handler(sig, frame):
+    """
+    Handle SIGINT (Ctrl + C) to stop workers and exit cleanly.
+    """
+    logging.info("Received interrupt signal (Ctrl + C).")
+    if sub_camera:
+        sub_camera.undeclare()  # Stop Zenoh subscription
+    stop_workers()
+    _on_exit()
+    exit(0)
 
-    # img_dic = {
-    #     "timestamp": Image.timestamp.ToDatetime(),
-    #     "frame_id": Image.frame_id,
-    #     "data": Image.data,
-    #     "format": Image.format
-    # }
-
-    # Save the image to disk
-    # output_image_path = os.path.join("./imgs", "test_image.jpg")
-    # cv2.imwrite(output_image_path, decoded_image)
-
-    # Display the image (FOLLOWING DONT WORK as it is headless - unsure if threr is a workaround? Maybe, if not used in the dev container insted try in a local env)
-    # cv2.imshow("Panorama Image", decoded_image)
-    # cv2.waitKey(0)
-    # cv2.destroyAllWindows()
-
-    ##########################
-    # TODO: STITCHING HERE
-    ##########################
-
-    # Packing panorama created
-    # newImage = CompressedImage()
-    # newImage.timestamp.FromNanoseconds(ingress_timestamp)
-    # newImage.frame_id = "foxglove_frame_id"
-    # newImage.data = b"binary_image_data"  # Binary image data
-    # newImage.format = "jpeg"  # supported formats `webp`, `jpeg`, `png`
-    # serialized_payload = newImage.SerializeToString()
-    # envelope = keelson.enclose(serialized_payload)
-    # pub_camera_panorama.put(envelope)
-
-
-def fixed_hz_publisher():
-
-    ingress_timestamp = time.time_ns()
-
-    # Camera image getter
-    replies = session.get(
-        args.camera_query,
-        zenoh.Queue(),
-        target=QueryTarget.BEST_MATCHING(),
-        consolidation=zenoh.QueryConsolidation.NONE(),
-    )
-
-    for reply in replies.receiver:
-        try:
-            print(
-                ">> Received ('{}': '{}')".format(
-                    reply.ok.key_expr, reply.ok.payload)
-            )
-            # Unpacking image
-            received_at, enclosed_at, content = keelson.uncover(
-                reply.ok.payload)
-            logging.debug(
-                f"content {content} received_at: {received_at}, enclosed_at {enclosed_at}")
-            Image = CompressedImage.FromString(content)
-
-            img_dic = {
-                "timestamp": Image.timestamp.ToDatetime(),
-                "frame_id": Image.frame_id,
-                "data": Image.data,
-                "format": Image.format
-            }
-
-        except:
-            print(">> Received (ERROR: '{}')".format(reply.err.payload))
-
-    ##########################
-    # TODO: STITCHING HERE
-    ##########################
-
-    # Packing panorama created
-    newImage = CompressedImage()
-    newImage.timestamp.FromNanoseconds(ingress_timestamp)
-    newImage.frame_id = "foxglove_frame_id"
-    newImage.data = b"binary_image_data"  # Binary image data
-    newImage.format = "jpeg"  # supported formats `webp`, `jpeg`, `png`
-    serialized_payload = newImage.SerializeToString()
-    envelope = keelson.enclose(serialized_payload)
-    pub_camera_panorama.put(envelope)
-    time.sleep(1 / args.fixed_hz)
-
-
-#####################################################
 """
-# Processor stitching panorama image 
+Processor stitching panorama image 
 
 Start with either: 
     - Subscriptions Camera  
@@ -248,6 +160,7 @@ Start with either:
 if __name__ == "__main__":
     # Input arguments and configurations
     args = terminal_inputs()
+
     # Setup logger
     logging.basicConfig(
         format="%(asctime)s %(levelname)s %(name)s %(message)s", level=args.log_level
@@ -258,8 +171,7 @@ if __name__ == "__main__":
     # Construct session
     logging.info("Opening Zenoh session...")
     conf = zenoh.Config()
-    if args.mode is not None:
-        conf.insert_json5(zenoh.config.MODE_KEY, json.dumps(args.mode))
+
     if args.connect is not None:
         conf.insert_json5(zenoh.config.CONNECT_KEY, json.dumps(args.connect))
     session = zenoh.open(conf)
@@ -272,90 +184,48 @@ if __name__ == "__main__":
     atexit.register(_on_exit)
     logging.info(f"Zenoh session established: {session.info()}")
 
-        #################################################
+    #################################################
     # Setting up PUBLISHER
 
-    # # Camera panorama
-    # key_exp_pub_camera_pano = keelson.construct_pub_sub_key(
-    #     realm=args.realm,
-    #     entity_id=args.entity_id,
-    #     subject="compressed_image",  # Needs to be a supported subject
-    #     source_id="panorama/" + args.output_id,
-    # )
-    # pub_camera_panorama = session.declare_publisher(
-    #     key_exp_pub_camera_pano,
-    #     priority=zenoh.Priority.INTERACTIVE_HIGH(),
-    #     congestion_control=zenoh.CongestionControl.DROP(),
-    # )
-    # logging.info(f"Created publisher: {key_exp_pub_camera_pano}")
+    key_exp_pub_camera_pano = keelson.construct_pub_sub_key(
+        realm=args.realm,
+        entity_id=args.entity_id,
+        subject="compressed_image",  # Needs to be a supported subject
+        source_id="undistorted_image"
+    )
+    pub_camera_panorama = session.declare_publisher(
+        key_exp_pub_camera_pano,
+        priority=zenoh.Priority.INTERACTIVE_HIGH(),
+        congestion_control=zenoh.CongestionControl.DROP(),
+    )
+    logging.info(f"Created publisher: {key_exp_pub_camera_pano}")
 
-    #################################################
-    # Setting up Querible
+    # Start the image processing worker threads
+    worker_threads = []
+    for i in range(NUM_WORKERS):
+        worker_thread = threading.Thread(target=process_image_worker, args=(i,), daemon=True)
+        worker_threads.append(worker_thread)
+        worker_thread.start()
 
-    # Camera panorama
-    # key_exp_query_camera_pano = keelson.construct_req_rep_key(
-    #     realm=args.realm,
-    #     entity_id=args.entity_id,
-    #     responder_id="panorama",
-    #     procedure="get_panorama",
-    # )
-    # query_camera_panorama = session.declare_queryable(
-    #     key_exp_query_camera_pano,
-    #     query_panorama
-    # )
-    # logging.info(f"Created queryable: {key_exp_query_camera_pano}")
-
-    #################################################
-
-    # Setup publishers for undistorted images
-    undistorted_image_publishers = {}
-    for axis in range(1, 5):  # Assuming axes 1 through 4
-        topic = f"rise/v0/boatswain/pubsub/undistorted_image/axis-{axis}"
-        undistorted_image_publishers[axis] = session.declare_publisher(topic, priority=zenoh.Priority.INTERACTIVE_HIGH())
-        logging.info(f"Created publisher for undistorted images: {topic}")
-
-    # Define a subscriber handling function for each camera axis
-    def handle_camera_feed(axis):
-        def subscriber_handler(data):
-            subscriber_camera_publisher(data, undistorted_image_publishers[axis], axis)
-        return subscriber_handler
-
-    # Declare subscribers for each camera feed based on axis
-    for axis in range(1, 5):
-        topic = f"rise/v0/boatswain/pubsub/compressed_image/axis-{axis}"
-        subscriber_handler = handle_camera_feed(axis)
-        session.declare_subscriber(topic, subscriber_handler)
-        logging.info(f"Declared subscriber for {topic}")
+    # Register the signal handler for Ctrl + C
+    signal.signal(signal.SIGINT, signal_handler)
 
     try:
-        # # TODO: SUBSCRIPTION initialization for panorama image creation
-        # if args.trigger_sub is not None:
+        # Subscribe to both axis-1 and axis-2
+        if args.trigger_sub is not None:
+            key_exp_sub_camera = args.trigger_sub
+            logging.info(f"Subscribing to key: {key_exp_sub_camera}")
 
-        #     key_exp_sub_camera = keelson.construct_pub_sub_key(
-        #         realm=args.realm,
-        #         entity_id=args.entity_id,
-        #         subject="compressed_image",  # Needs to be a supported subject
-        #         source_id=args.trigger_sub,
-        #     )
-
-        #     logging.info(f"Subscribing to key: {key_exp_sub_camera}")
-
-        #     # Declaring zenoh publisher
-        #     sub_camera = session.declare_subscriber(
-        #         key_exp_sub_camera, subscriber_camera_publisher
-        #     )
-
-        # # TODO: FIXED HZ initialization for panorama image creation
-        # if args.trigger_hz is not None:
-        #     logging.info(f"Trigger Hz: {args.trigger_hz}")
-        #     while True:
-        #         fixed_hz_publisher()
-
+            # Declaring subscriber
+            sub_camera = session.declare_subscriber(
+                key_exp_sub_camera, subscriber_camera_publisher
+            )
 
         input("Press Enter to exit...\n")
-    except KeyboardInterrupt:
-        logging.info("Program ended due to user request (Ctrl-C)")
+        sub_camera.undeclare()  # Stop Zenoh subscription on Enter key press
+        stop_workers()  # Stop workers when Enter is pressed
     except Exception as e:
         logging.error(f"Program ended due to error: {e}")
+        stop_workers()  # Ensure workers stop on exception
     finally:
         _on_exit()
