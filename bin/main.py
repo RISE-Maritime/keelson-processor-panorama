@@ -69,7 +69,7 @@ def process_image_worker(worker_id):
                     new_image.timestamp.FromNanoseconds(ingress_timestamp)
                     new_image.data = compressed_image_data.tobytes()
                     new_image.format = 'jpeg'
-                    print('HEEEJ') 
+
                     serialized_payload = new_image.SerializeToString()
                     envelope = keelson.enclose(serialized_payload)
 
@@ -104,21 +104,10 @@ def stop_workers():
         worker_thread.join()
 
 def subscriber_camera_publisher(data):
-    if args.trigger_sub is not None:
-        key_exp_sub_camera = args.trigger_sub
-        logging.info(f"Subscribing to key: {key_exp_sub_camera}")
-
-        # Declaring subscriber
-        sub_camera = session.declare_subscriber(
-            key_exp_sub_camera, subscriber_camera_publisher
-        )
-        
-        logging.info("Subscriber declared successfully.")
     """
     Subscriber trigger by camera image incoming.
     Adds images to the processing queue for asynchronous handling.
     """
-    print('ddd')
     if stop_event.is_set():
         return  # Stop adding images to the queue if we are shutting down
 
@@ -229,3 +218,4 @@ if __name__ == "__main__":
         stop_workers()  # Ensure workers stop on exception
     finally:
         _on_exit()
+        
